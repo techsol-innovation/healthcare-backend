@@ -1,0 +1,24 @@
+{
+  "created": [
+    {
+      "AlertId": 1
+    }
+  ],
+  "unread": [
+    {
+      "AlertId": 1,
+      "ParentId": 101,
+      "ChildId": 202,
+      "AlertType": "sos",
+      "Title": "Test SOS",
+      "Message": "Test msg",
+      "Severity": "critical",
+      "IsRead": 0,
+      "RelatedEntityId": 1,
+      "RelatedEntityType": "sos",
+      "CreatedAt": "2026-07-28T08:03:13.290Z",
+      "ChildName": "Mock Parent",
+      "ChildEmail": "parent@sync.local"
+    }
+  ]
+}
