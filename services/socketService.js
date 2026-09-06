@@ -30,6 +30,18 @@ const initializeSocket = (server) => {
       socket.join(`user_${userId}`);
     });
 
+    // Caregiver requests immediate live battery telemetry from a parent's device
+    socket.on('request_parent_battery_ping', (payload) => {
+      const parentId = payload?.parentId || payload;
+      if (parentId) {
+        console.log(`📡 Caregiver ${socket.userId} requested battery ping from Parent ${parentId}`);
+        io.to(`user_${parentId}`).emit('request_battery_status', {
+          requestedBy: socket.userId,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    });
+
     socket.on('disconnect', () => {
       if (socket.userId) {
         connectedUsers.delete(socket.userId.toString());

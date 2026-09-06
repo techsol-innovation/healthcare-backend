@@ -38,22 +38,36 @@ exports.reportBatteryStatus = async (req, res) => {
     console.log('='.repeat(60) + '\n');
     // ===== END LIVE BATTERY DISPLAY =====
 
+    // Sanitize battery percentage
+    const safePercentage = Math.max(0, Math.min(100, (batteryPercentage < 0 ? 100 : batteryPercentage)));
+
     // Log battery status
-    await BatteryLog.create(parentUserId, batteryPercentage, batteryState);
+    await BatteryLog.create(parentUserId, safePercentage, batteryState);
+
+    // Look up linked caretaker for real-time socket broadcast & alert
+    const caretakerId = await BatteryAlert.getCaretakerId(parentUserId);
+    if (caretakerId) {
+      sendNotificationToUser(caretakerId, 'battery_updated', {
+        parentId: parentUserId,
+        batteryPercentage: safePercentage,
+        batteryState,
+        isCharging: batteryState === 'charging' || batteryState === 'full',
+        timestamp: new Date().toISOString(),
+      });
+      console.log(`📡 Broadcast battery_updated to Caregiver ${caretakerId}: ${safePercentage}% (${batteryState})`);
+    }
 
     // Check if alert is needed (battery <= 20%)
-    const shouldAlert = batteryPercentage <= 20 && batteryState !== 'charging';
+    const shouldAlert = safePercentage <= 20 && batteryState !== 'charging' && batteryState !== 'unsupported';
 
     if (!shouldAlert) {
       return res.json({
         success: true,
-        message: 'Battery status logged',
+        message: 'Battery status logged and broadcast',
         alertTriggered: false
       });
     }
 
-    // Get linked caretaker
-    const caretakerId = await BatteryAlert.getCaretakerId(parentUserId);
     if (!caretakerId) {
       return res.json({
         success: true,
@@ -165,6 +179,14 @@ exports.getBatteryStatus = async (req, res) => {
     const status = await BatteryLog.getCurrentStatus(parseInt(parentUserId));
     
     console.log('📊 Battery status retrieved:', status);
+
+    // If queried by caregiver, prompt the parent device via socket to sample fresh telemetry in the background
+    if (requestingUserRole === 'child') {
+      sendNotificationToUser(parseInt(parentUserId), 'request_battery_status', {
+        requestedBy: requestingUserId,
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     // Convert camelCase to PascalCase for mobile app compatibility
     const formattedStatus = status ? {

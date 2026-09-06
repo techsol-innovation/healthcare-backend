@@ -514,6 +514,16 @@ const updateMedicineStatus = async (req, res) => {
       });
     }
 
+    if (caregiverId) {
+      sendNotificationToUser(caregiverId, 'medicine_status_updated', {
+        parentId: parentUserId,
+        medicineId: Number(id),
+        status,
+        scheduledTime,
+        takenAt,
+      });
+    }
+
     console.log(`✅ Medicine status updated to ${status} successfully`);
 
     res.status(200).json({

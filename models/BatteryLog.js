@@ -82,15 +82,17 @@ class BatteryLog {
     }
   }
 
-  // Get battery history for charting (updated method)
+  // Get battery history for charting (supports ParentUserId or fallback ChildId)
   static async getHistory(parentUserId, hours = 24) {
     try {
       const pool = await getConnection();
+      const pId = parseInt(parentUserId, 10);
+      const h = parseInt(hours, 10) || 24;
       
       const result = await pool
         .request()
-        .input('parentUserId', mssql.Int, parentUserId)
-        .input('hours', mssql.Int, hours)
+        .input('parentUserId', mssql.Int, pId)
+        .input('hours', mssql.Int, h)
         .query(`
           SELECT 
             BatteryPercentage,
@@ -98,7 +100,7 @@ class BatteryLog {
             IsCharging,
             LoggedAt
           FROM BatteryLogs
-          WHERE ParentUserId = @parentUserId
+          WHERE (ParentUserId = @parentUserId OR ChildId = @parentUserId)
           AND LoggedAt >= DATEADD(HOUR, -@hours, GETDATE())
           ORDER BY LoggedAt ASC
         `);
@@ -203,8 +205,8 @@ class BatteryLog {
     return result.recordset[0] || null;
   }
 
-  // Get battery history for a child
-  static async getHistory(childId, hours = 24) {
+  // Get battery history for a child (legacy)
+  static async getChildHistory(childId, hours = 24) {
     const pool = await getConnection();
     const result = await pool
       .request()

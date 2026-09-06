@@ -30,10 +30,10 @@ router.post(
   '/report',
   verifyToken,
   body('batteryPercentage')
-    .isInt({ min: 0, max: 100 })
+    .isInt({ min: -1, max: 100 })
     .withMessage('Battery percentage must be between 0 and 100'),
   body('batteryState')
-    .isIn(['charging', 'unplugged', 'full', 'unknown'])
+    .isIn(['charging', 'unplugged', 'full', 'unknown', 'unsupported'])
     .withMessage('Invalid battery state'),
   body('deviceInfo')
     .optional()

@@ -55,7 +55,29 @@ const sendHeartbeat = async (req, res) => {
 
     console.log('✅ Heartbeat recorded:', heartbeatId);
 
-    // NOTE: We no longer log to BatteryLogs here because there is a dedicated batteryController for that.
+    // Also update BatteryLogs for dual-channel redundancy
+    if (batteryLevel !== undefined && batteryLevel !== null) {
+      const bState = isCharging ? 'charging' : 'unplugged';
+      try {
+        await BatteryLog.create(validParentId, validBatteryLevel, bState);
+        
+        // Broadcast to linked caregiver
+        const BatteryAlert = require('../models/BatteryAlert');
+        const { sendNotificationToUser } = require('../services/socketService');
+        const caretakerId = await BatteryAlert.getCaretakerId(validParentId);
+        if (caretakerId) {
+          sendNotificationToUser(caretakerId, 'battery_updated', {
+            parentId: validParentId,
+            batteryPercentage: validBatteryLevel,
+            batteryState: bState,
+            isCharging: !!isCharging,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (bErr) {
+        console.warn('⚠️ Could not update battery from heartbeat:', bErr.message);
+      }
+    }
 
     res.status(200).json({
       success: true,
