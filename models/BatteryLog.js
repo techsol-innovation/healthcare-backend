@@ -6,20 +6,22 @@ class BatteryLog {
     try {
       const pool = await getConnection();
       const isCharging = batteryState === 'charging' ? 1 : 0;
+      const pId = parseInt(parentUserId, 10);
+      const safePct = Math.max(0, Math.min(100, parseInt(batteryPercentage, 10) || 0));
       
       const result = await pool
         .request()
-        .input('parentUserId', mssql.Int, parentUserId)
-        .input('batteryPercentage', mssql.Int, batteryPercentage)
+        .input('parentUserId', mssql.Int, pId)
+        .input('batteryPercentage', mssql.Int, safePct)
         .input('batteryState', mssql.VarChar(20), batteryState)
         .input('isCharging', mssql.Bit, isCharging)
         .query(`
-          INSERT INTO BatteryLogs (ParentUserId, BatteryPercentage, BatteryState, IsCharging, LoggedAt)
-          VALUES (@parentUserId, @batteryPercentage, @batteryState, @isCharging, GETDATE());
+          INSERT INTO BatteryLogs (ParentUserId, BatteryPercentage, BatteryState, IsCharging, LoggedAt, ChildId, BatteryLevel)
+          VALUES (@parentUserId, @batteryPercentage, @batteryState, @isCharging, GETDATE(), @parentUserId, @batteryPercentage);
           SELECT SCOPE_IDENTITY() AS LogId;
         `);
       
-      console.log(`📊 Battery logged: Parent=${parentUserId}, Battery=${batteryPercentage}%, State=${batteryState}`);
+      console.log(`📊 Battery logged: Parent=${pId}, Battery=${safePct}%, State=${batteryState}`);
       return result.recordset[0]?.LogId;
     } catch (error) {
       console.error('❌ Error logging battery status:', error);
@@ -222,7 +224,7 @@ class BatteryLog {
     return result.recordset;
   }
 
-  // Get children with low battery
+  // Get children/parents with low battery
   static async getLowBatteryChildren(threshold = 20) {
     const pool = await getConnection();
     const result = await pool
@@ -233,18 +235,19 @@ class BatteryLog {
           u.UserId as ChildId,
           u.Name as ChildName,
           u.Email as ChildEmail,
-          bl.BatteryLevel,
+          ISNULL(bl.BatteryPercentage, bl.BatteryLevel) as BatteryLevel,
           bl.IsCharging,
           bl.LoggedAt
         FROM Users u
         INNER JOIN (
-          SELECT ChildId, MAX(LoggedAt) as LatestLog
+          SELECT ISNULL(ParentUserId, ChildId) AS TargetUserId, MAX(LoggedAt) as LatestLog
           FROM BatteryLogs
-          GROUP BY ChildId
-        ) latest ON u.UserId = latest.ChildId
-        INNER JOIN BatteryLogs bl ON latest.ChildId = bl.ChildId AND latest.LatestLog = bl.LoggedAt
+          WHERE ParentUserId IS NOT NULL OR ChildId IS NOT NULL
+          GROUP BY ISNULL(ParentUserId, ChildId)
+        ) latest ON u.UserId = latest.TargetUserId
+        INNER JOIN BatteryLogs bl ON (ISNULL(bl.ParentUserId, bl.ChildId) = latest.TargetUserId) AND latest.LatestLog = bl.LoggedAt
         WHERE u.Role = 'parent'
-          AND bl.BatteryLevel <= @threshold
+          AND ISNULL(bl.BatteryPercentage, bl.BatteryLevel) <= @threshold
           AND bl.IsCharging = 0
       `);
     

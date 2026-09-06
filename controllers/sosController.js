@@ -52,7 +52,11 @@ const triggerSOS = async (req, res) => {
     let locObj = null;
     if (location) {
       if (typeof location === 'string') {
-        try { locObj = JSON.parse(location); } catch(e) {}
+        try { 
+          locObj = JSON.parse(location); 
+        } catch(e) {
+          console.warn('⚠️ [SOS] Location was not valid JSON string:', e.message);
+        }
       } else {
         locObj = location;
       }

@@ -20,22 +20,27 @@ const checkOfflineChildren = async () => {
     const pool = await getConnection();
 
     for (const child of offlineChildren) {
-      // Get all parents linked to this child
-      const parents = await pool
+      // Find all caregivers linked to this patient (ParentChildLink stores ParentId=patient, ChildId=caregiver)
+      const caregivers = await pool
         .request()
-        .input('childId', mssql.Int, child.ChildId)
+        .input('patientId', mssql.Int, child.ChildId)
         .query(`
-          SELECT ParentId, u.Name as ParentName
+          SELECT pcl.ChildId AS CaregiverId, u.Name AS CaregiverName
           FROM ParentChildLink pcl
-          LEFT JOIN Users u ON pcl.ParentId = u.UserId
-          WHERE pcl.ChildId = @childId
+          JOIN Users u ON pcl.ChildId = u.UserId
+          WHERE pcl.ParentId = @patientId
+          UNION
+          SELECT pcl.ParentId AS CaregiverId, u.Name AS CaregiverName
+          FROM ParentChildLink pcl
+          JOIN Users u ON pcl.ParentId = u.UserId
+          WHERE pcl.ChildId = @patientId AND u.Role = 'child'
         `);
 
-      for (const parent of parents.recordset) {
+      for (const caregiver of caregivers.recordset) {
         // Check if alert already exists for this offline event (within last hour)
         const existingAlert = await pool
           .request()
-          .input('parentId', mssql.Int, parent.ParentId)
+          .input('parentId', mssql.Int, caregiver.CaregiverId)
           .input('childId', mssql.Int, child.ChildId)
           .query(`
             SELECT AlertId FROM Alerts
@@ -46,9 +51,9 @@ const checkOfflineChildren = async () => {
           `);
 
         if (existingAlert.recordset.length === 0) {
-          // Create offline alert
+          // Create offline alert (sent to caregiver)
           const alertId = await Alert.create({
-            parentId: parent.ParentId,
+            parentId: caregiver.CaregiverId,
             childId: child.ChildId,
             alertType: 'offline',
             title: '📵 Device Offline',
@@ -56,8 +61,8 @@ const checkOfflineChildren = async () => {
             severity: 'high',
           });
 
-          // Send real-time notification
-          sendNotificationToUser(parent.ParentId, 'offline_alert', {
+          // Send real-time notification to caregiver
+          sendNotificationToUser(caregiver.CaregiverId, 'offline_alert', {
             alertId,
             childId: child.ChildId,
             childName: child.ChildName,
@@ -68,12 +73,12 @@ const checkOfflineChildren = async () => {
 
           // Send native push notification to caregiver
           sendPushNotification(
-            parent.ParentId, 
+            caregiver.CaregiverId, 
             '📵 Device Offline', 
             `${child.ChildName} has been offline for ${child.MinutesOffline} minutes. Last seen at ${new Date(child.LastSeenAt).toLocaleTimeString()}.`
           );
 
-          console.log(`✅ Created offline alert for ${child.ChildName}`);
+          console.log(`✅ Created offline alert for ${child.ChildName} -> caregiver ${caregiver.CaregiverName}`);
         }
       }
     }
@@ -92,27 +97,32 @@ const checkLowBattery = async () => {
     const threshold = 20;
     const lowBatteryChildren = await BatteryLog.getLowBatteryChildren(threshold);
 
-    console.log(`Found ${lowBatteryChildren.length} children with low battery`);
+    console.log(`Found ${lowBatteryChildren.length} children/parents with low battery`);
 
     const pool = await getConnection();
 
     for (const child of lowBatteryChildren) {
-      // Get all parents linked to this child
-      const parents = await pool
+      // Find all caregivers linked to this patient (ParentChildLink stores ParentId=patient, ChildId=caregiver)
+      const caregivers = await pool
         .request()
-        .input('childId', mssql.Int, child.ChildId)
+        .input('patientId', mssql.Int, child.ChildId)
         .query(`
-          SELECT ParentId, u.Name as ParentName
+          SELECT pcl.ChildId AS CaregiverId, u.Name AS CaregiverName
           FROM ParentChildLink pcl
-          LEFT JOIN Users u ON pcl.ParentId = u.UserId
-          WHERE pcl.ChildId = @childId
+          JOIN Users u ON pcl.ChildId = u.UserId
+          WHERE pcl.ParentId = @patientId
+          UNION
+          SELECT pcl.ParentId AS CaregiverId, u.Name AS CaregiverName
+          FROM ParentChildLink pcl
+          JOIN Users u ON pcl.ParentId = u.UserId
+          WHERE pcl.ChildId = @patientId AND u.Role = 'child'
         `);
 
-      for (const parent of parents.recordset) {
+      for (const caregiver of caregivers.recordset) {
         // Check if alert already exists for this low battery event (within last 2 hours)
         const existingAlert = await pool
           .request()
-          .input('parentId', mssql.Int, parent.ParentId)
+          .input('parentId', mssql.Int, caregiver.CaregiverId)
           .input('childId', mssql.Int, child.ChildId)
           .query(`
             SELECT AlertId FROM Alerts
@@ -123,9 +133,9 @@ const checkLowBattery = async () => {
           `);
 
         if (existingAlert.recordset.length === 0) {
-          // Create low battery alert
+          // Create low battery alert (sent to caregiver)
           const alertId = await Alert.create({
-            parentId: parent.ParentId,
+            parentId: caregiver.CaregiverId,
             childId: child.ChildId,
             alertType: 'low_battery',
             title: '🔋 Low Battery',
@@ -133,8 +143,8 @@ const checkLowBattery = async () => {
             severity: child.BatteryLevel <= 10 ? 'critical' : 'medium',
           });
 
-          // Send real-time notification
-          sendNotificationToUser(parent.ParentId, 'low_battery_alert', {
+          // Send real-time notification to caregiver
+          sendNotificationToUser(caregiver.CaregiverId, 'low_battery_alert', {
             alertId,
             childId: child.ChildId,
             childName: child.ChildName,
@@ -144,12 +154,12 @@ const checkLowBattery = async () => {
 
           // Send native push notification to caregiver
           sendPushNotification(
-            parent.ParentId, 
+            caregiver.CaregiverId, 
             '🔋 Low Battery', 
             `${child.ChildName}'s device battery is at ${child.BatteryLevel}%. Please charge the device.`
           );
 
-          console.log(`✅ Created low battery alert for ${child.ChildName} (${child.BatteryLevel}%)`);
+          console.log(`✅ Created low battery alert for ${child.ChildName} (${child.BatteryLevel}%) -> caregiver ${caregiver.CaregiverName}`);
         }
       }
     }
