@@ -395,9 +395,17 @@ const confirmMedicine = async (req, res) => {
           INSERT INTO MedicineTracking (MedicineId, ScheduledDate, ScheduledTime, Status, TakenAt, CreatedAt)
           VALUES (@medicineId, @scheduledDate, @scheduledTime, 'taken', @takenAt, GETDATE())
         END
+
+        -- Auto-resolve and dismiss all unread reminder/missed alerts for this medicine today
+        UPDATE Alerts 
+        SET IsRead = 1, ReadAt = GETDATE()
+        WHERE RelatedEntityId = @medicineId 
+          AND RelatedEntityType = 'medicine'
+          AND AlertType IN ('custom_reminder', 'missed_medicine')
+          AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE);
       `);
 
-    console.log('✅ Medicine confirmed successfully');
+    console.log('✅ Medicine confirmed successfully and active alerts auto-resolved');
 
     res.status(200).json({
       success: true,
@@ -426,10 +434,10 @@ const updateMedicineStatus = async (req, res) => {
     const parentUserId = req.user.userId;
     console.log("TRACE 2: Backend received status update. Body:", req.body, "| Params id:", id, "| JWT parentUserId:", parentUserId);
 
-    if (!['taken', 'missed'].includes(status)) {
+    if (!['taken', 'missed', 'pending'].includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid status. Must be "taken" or "missed".',
+        message: 'Invalid status. Must be "taken", "missed", or "pending".',
       });
     }
 
@@ -457,61 +465,124 @@ const updateMedicineStatus = async (req, res) => {
       });
     }
 
-    const takenAt = status === 'taken' ? new Date() : null;
-
-    // Insert or update tracking record for today
-    await pool
-      .request()
-      .input('medicineId', mssql.Int, id)
-      .input('status', mssql.VarChar, status)
-      .input('scheduledDate', mssql.Date, new Date())
-      .input('scheduledTime', mssql.VarChar, scheduledTime || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))
-      .input('takenAt', mssql.DateTime, takenAt)
-      .query(`
-        UPDATE MedicineTracking 
-        SET Status = @status, TakenAt = @takenAt
-        WHERE MedicineId = @medicineId 
-        AND TRIM(UPPER(ScheduledTime)) = TRIM(UPPER(@scheduledTime))
-        AND CAST(ScheduledDate AS DATE) = CAST(@scheduledDate AS DATE)
-        
-        -- If no rows updated, insert new record
-        IF @@ROWCOUNT = 0
-        BEGIN
-          INSERT INTO MedicineTracking (MedicineId, ScheduledDate, ScheduledTime, Status, TakenAt, CreatedAt)
-          VALUES (@medicineId, @scheduledDate, @scheduledTime, @status, @takenAt, GETDATE())
-        END
-      `);
-
-    // Milestone 6: Notify caregiver on both Taken AND Missed
     const caregiverId = medicineCheck.recordset[0].ChildId;
     const medicineName = medicineCheck.recordset[0].Name;
+    const parentName = medicineCheck.recordset[0].ParentName || 'Parent';
+    const doseTime = scheduledTime || new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const takenAt = status === 'taken' ? new Date() : null;
+
+    if (status === 'pending') {
+      // Unmark: Delete or reset tracking for today's dose
+      await pool
+        .request()
+        .input('medicineId', mssql.Int, id)
+        .input('scheduledTime', mssql.VarChar, doseTime)
+        .query(`
+          DELETE FROM MedicineTracking 
+          WHERE MedicineId = @medicineId 
+          AND TRIM(UPPER(ScheduledTime)) = TRIM(UPPER(@scheduledTime))
+          AND CAST(ScheduledDate AS DATE) = CAST(GETDATE() AS DATE);
+
+          -- Also resolve any active alerts for this dose today
+          UPDATE Alerts 
+          SET IsRead = 1, ReadAt = GETDATE()
+          WHERE RelatedEntityId = @medicineId 
+            AND RelatedEntityType = 'medicine'
+            AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE);
+        `);
+    } else {
+      // Insert or update tracking record for today
+      await pool
+        .request()
+        .input('medicineId', mssql.Int, id)
+        .input('status', mssql.VarChar, status)
+        .input('scheduledDate', mssql.Date, new Date())
+        .input('scheduledTime', mssql.VarChar, doseTime)
+        .input('takenAt', mssql.DateTime, takenAt)
+        .query(`
+          UPDATE MedicineTracking 
+          SET Status = @status, TakenAt = @takenAt
+          WHERE MedicineId = @medicineId 
+          AND TRIM(UPPER(ScheduledTime)) = TRIM(UPPER(@scheduledTime))
+          AND CAST(ScheduledDate AS DATE) = CAST(@scheduledDate AS DATE)
+          
+          -- If no rows updated, insert new record
+          IF @@ROWCOUNT = 0
+          BEGIN
+            INSERT INTO MedicineTracking (MedicineId, ScheduledDate, ScheduledTime, Status, TakenAt, CreatedAt)
+            VALUES (@medicineId, @scheduledDate, @scheduledTime, @status, @takenAt, GETDATE())
+          END
+        `);
+    }
+
+    if (status === 'taken') {
+      // Auto-resolve and dismiss all unread reminder & missed alerts for this medicine today
+      await pool
+        .request()
+        .input('medicineId', mssql.Int, id)
+        .query(`
+          UPDATE Alerts 
+          SET IsRead = 1, ReadAt = GETDATE()
+          WHERE RelatedEntityId = @medicineId 
+            AND RelatedEntityType = 'medicine'
+            AND AlertType IN ('custom_reminder', 'missed_medicine')
+            AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE);
+        `);
+    }
 
     if (status === 'missed') {
-      console.log("TRACE 3: Attempting to create Alert for Caregiver ID:", caregiverId, "| Medicine:", medicineName);
-      const newAlert = await Alert.create({
-        parentId: caregiverId,        // recipient (Caregiver)
-        childId: parentUserId,        // sender (Parent)
-        alertType: 'missed_medicine',
-        title: '💊 Medicine Missed',
-        message: `${medicineName} (Dose: ${scheduledTime}) was marked as missed.`,
-        severity: 'medium',
-        relatedEntityId: Number(id),
-        relatedEntityType: 'medicine',
-      });
-      console.log("TRACE 4: Alert successfully saved to DB:", newAlert);
-      console.log("ALERT CREATED:", { caregiverId, type: 'MEDICINE_MISSED' });
-      
-      const parentName = medicineCheck.recordset[0].ParentName || 'Parent';
-      
-      // Send Push Notification asynchronously
-      sendPushNotification(caregiverId, '⚠️ Missed Medicine', `${parentName} just missed their medicine: ${medicineName} (Dose: ${scheduledTime}).`);
-      
-      // Emit real-time socket event for the sound/vibration
-      sendNotificationToUser(caregiverId, 'missed_medicine_alert', {
-        parentName: parentName,
-        medicineName: medicineName,
-        scheduledTime: scheduledTime
-      });
+      // Mark any warning reminder alerts as resolved so they don't loop
+      await pool
+        .request()
+        .input('medicineId', mssql.Int, id)
+        .input('parentId', mssql.Int, parentUserId)
+        .query(`
+          UPDATE Alerts 
+          SET IsRead = 1, ReadAt = GETDATE()
+          WHERE RelatedEntityId = @medicineId 
+            AND AlertType = 'custom_reminder'
+            AND ParentId = @parentId
+            AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE);
+        `);
+
+      // Check if we already alerted the caregiver for this dose today to prevent duplicates
+      const existingAlert = await pool
+        .request()
+        .input('medicineId', mssql.Int, id)
+        .input('caregiverId', mssql.Int, caregiverId)
+        .input('timeFilter', mssql.VarChar, `%${doseTime}%`)
+        .query(`
+          SELECT AlertId FROM Alerts
+          WHERE RelatedEntityId = @medicineId 
+            AND ParentId = @caregiverId
+            AND AlertType = 'missed_medicine'
+            AND CAST(CreatedAt AS DATE) = CAST(GETDATE() AS DATE)
+            AND Message LIKE @timeFilter
+        `);
+
+      if (existingAlert.recordset.length === 0) {
+        console.log("Creating missed alert for Caregiver ID:", caregiverId, "| Medicine:", medicineName);
+        const newAlert = await Alert.create({
+          parentId: caregiverId,        // recipient (Caregiver)
+          childId: parentUserId,        // sender (Parent)
+          alertType: 'missed_medicine',
+          title: '💊 Medicine Missed',
+          message: `${medicineName} (Dose: ${doseTime}) was marked as missed.`,
+          severity: 'medium',
+          relatedEntityId: Number(id),
+          relatedEntityType: 'medicine',
+        });
+
+        // Send Push Notification asynchronously
+        sendPushNotification(caregiverId, '⚠️ Missed Medicine', `${parentName} just missed their medicine: ${medicineName} (Dose: ${doseTime}).`);
+        
+        // Emit real-time socket event for the sound/vibration
+        sendNotificationToUser(caregiverId, 'missed_medicine_alert', {
+          parentName: parentName,
+          medicineName: medicineName,
+          scheduledTime: doseTime
+        });
+      }
     }
 
     if (caregiverId) {
@@ -519,7 +590,7 @@ const updateMedicineStatus = async (req, res) => {
         parentId: parentUserId,
         medicineId: Number(id),
         status,
-        scheduledTime,
+        scheduledTime: doseTime,
         takenAt,
       });
     }

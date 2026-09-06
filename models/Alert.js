@@ -56,6 +56,23 @@ class Alert {
   // Get unread alerts for a parent
   static async getUnreadByParentId(parentId) {
     const pool = await getConnection();
+    
+    // Auto-archive stale reminder / missed alerts older than 24 hours
+    try {
+      await pool
+        .request()
+        .input('parentId', mssql.Int, parentId)
+        .query(`
+          UPDATE Alerts 
+          SET IsRead = 1, ReadAt = GETDATE()
+          WHERE ParentId = @parentId AND IsRead = 0
+            AND AlertType IN ('custom_reminder', 'missed_medicine', 'missed_checkin')
+            AND CreatedAt < DATEADD(HOUR, -24, GETDATE())
+        `);
+    } catch (archiveErr) {
+      console.error('Failed to auto-archive stale alerts:', archiveErr.message);
+    }
+
     const result = await pool
       .request()
       .input('parentId', mssql.Int, parentId)
@@ -67,6 +84,7 @@ class Alert {
         FROM Alerts a
         LEFT JOIN Users c ON a.ChildId = c.UserId
         WHERE a.ParentId = @parentId AND a.IsRead = 0
+          AND (a.AlertType NOT IN ('custom_reminder', 'missed_medicine', 'missed_checkin') OR a.CreatedAt >= DATEADD(HOUR, -24, GETDATE()))
         ORDER BY a.CreatedAt DESC
       `);
     

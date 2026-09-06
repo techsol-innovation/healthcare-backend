@@ -11,8 +11,9 @@ let expo = new Expo();
  * @param {string} title - The title of the notification.
  * @param {string} body - The body message of the notification.
  * @param {object} [data] - Optional extra data payload.
+ * @param {object} [options] - Optional notification options (channelId, sound, priority).
  */
-const sendPushNotification = async (userId, title, body, data = {}) => {
+const sendPushNotification = async (userId, title, body, data = {}, options = {}) => {
   try {
     // 1. Fetch the user's PushToken from the database
     const user = await User.findById(userId);
@@ -30,15 +31,25 @@ const sendPushNotification = async (userId, title, body, data = {}) => {
       return;
     }
 
+    // Determine if this is an SOS or emergency alert
+    const isSOS = data.type === 'sos' || data.alertType === 'sos' || options.channelId === 'emergency_sos';
+    const channelId = options.channelId || (isSOS ? 'emergency_sos' : 'alerts');
+    const sound = options.sound || (isSOS ? 'alert.wav' : 'default');
+    const priority = options.priority || (isSOS ? 'high' : 'default');
+
     // 3. Construct the message
     const messages = [];
     messages.push({
       to: pushToken,
-      sound: 'default',
-      channelId: 'alerts',
+      sound: sound,
+      channelId: channelId,
+      priority: priority,
       title: title,
       body: body,
-      data: data,
+      data: {
+        ...data,
+        channelId: channelId,
+      },
     });
 
     // 4. Send the notification chunk

@@ -79,8 +79,25 @@ const triggerSOS = async (req, res) => {
       relatedEntityType: 'sos',
     });
 
-    // Send Push Notification asynchronously
-    sendPushNotification(childId, '🚨 Emergency SOS', pushMessage);
+    // Send Push Notification asynchronously with emergency_sos channel & alarm sound
+    sendPushNotification(
+      childId,
+      '🚨 Emergency SOS',
+      pushMessage,
+      {
+        type: 'sos',
+        alertType: 'sos',
+        sosId,
+        parentId: parentUserId,
+        parentName,
+        location,
+      },
+      {
+        channelId: 'emergency_sos',
+        sound: 'alert.wav',
+        priority: 'high',
+      }
+    );
 
     // Send real-time notification to child
     sendNotificationToUser(childId, 'sos_alert', {

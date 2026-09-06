@@ -25,6 +25,7 @@ const checkMedicines = async () => {
       SELECT 
         m.MedicineId, m.Name as MedicineName, m.Dosage, m.Time as ScheduledTimeString,
         m.ParentId, m.ChildId, p.Name as ParentName, c.Name as ChildName,
+        m.CreatedAt as MedCreatedAt,
         CAST(GETDATE() AS DATE) as Today,
         mt.TrackingId, mt.ScheduledTime as TrackedTime
       FROM Medicines m
@@ -74,6 +75,12 @@ const checkMedicines = async () => {
         const parsed = parseAMPM(timeStr);
         if (!parsed) continue;
         const scheduledTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parsed.hours, parsed.minutes, 0, 0);
+
+        // Guard against doses scheduled prior to medicine creation today
+        if (base.MedCreatedAt && new Date(base.MedCreatedAt) > scheduledTime) {
+          continue;
+        }
+
         const diffMinutes = (now - scheduledTime) / (1000 * 60);
 
         // ─── 1. Check for 10-Minute Warnings (Notify Parent) ───
@@ -115,10 +122,10 @@ const checkMedicines = async () => {
         }
 
         // ─── 2. Check for 20-Minute Auto-Missed (Notify Caregiver) ───
-        if (diffMinutes >= 20) {
+        // Bound diffMinutes between 20 and 180 minutes to avoid waking up ancient doses
+        if (diffMinutes >= 20 && diffMinutes <= 180) {
           tasks.push((async () => {
-            // CRITICAL BUG FIX: Check if we ALREADY inserted a missed record for this slot.
-            // Without this check, the cron fires every minute and inserts a new 'missed' row EVERY MINUTE.
+            // Check if we ALREADY inserted a missed record for this slot.
             const existingMissed = await pool.request()
               .input('medicineId', mssql.Int, base.MedicineId)
               .input('scheduledDate', mssql.Date, base.Today)
@@ -131,6 +138,21 @@ const checkMedicines = async () => {
               `);
 
             if (existingMissed.recordset.length > 0) return; // already handled this slot
+
+            // Check if an alert was already sent for this slot today to prevent repeated alerts
+            const existingAlert = await pool.request()
+              .input('medicineId', mssql.Int, base.MedicineId)
+              .input('today', mssql.Date, base.Today)
+              .input('timeStr', mssql.VarChar, `%${timeStr}%`)
+              .query(`
+                SELECT AlertId FROM Alerts
+                WHERE AlertType = 'missed_medicine'
+                  AND RelatedEntityId = @medicineId
+                  AND CAST(CreatedAt AS DATE) = @today
+                  AND Message LIKE @timeStr
+              `);
+
+            if (existingAlert.recordset.length > 0) return; // already alerted
 
             // Insert missed tracking record (first time only)
             await pool.request()
