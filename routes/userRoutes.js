@@ -7,6 +7,7 @@ const {
   searchUserByEmail,
   inviteParent,
   updatePushToken,
+  deleteAccount,
 } = require('../controllers/userController');
 const { verifyToken, isChild, isParent } = require('../middleware/auth');
 const { validateLinkParent } = require('../middleware/validation');
@@ -22,5 +23,6 @@ router.get('/caregiver', verifyToken, isParent, getCaregiver);
 // Common routes
 router.get('/search', verifyToken, searchUserByEmail);
 router.put('/push-token', verifyToken, updatePushToken);
+router.delete('/account', verifyToken, deleteAccount);
 
 module.exports = router;

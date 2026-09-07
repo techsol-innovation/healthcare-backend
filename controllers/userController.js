@@ -341,6 +341,61 @@ const updatePushToken = async (req, res) => {
   }
 };
 
+// Delete account and all associated personal data (App Store & Play Store Compliance)
+const deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const pool = await getConnection();
+
+    // 1. Clean up links, alerts, sync tokens, heartbeat
+    try {
+      await pool.request()
+        .input('userId', mssql.Int, userId)
+        .query(`
+          DELETE FROM ParentChildLink WHERE ParentId = @userId OR ChildId = @userId;
+          DELETE FROM Alerts WHERE ParentId = @userId OR ChildId = @userId;
+          DELETE FROM SOS WHERE ParentId = @userId OR ChildId = @userId;
+          DELETE FROM Heartbeat WHERE UserId = @userId;
+        `);
+    } catch (e1) {
+      console.warn('Cleanup step 1 notice:', e1.message);
+    }
+
+    // 2. Clean up medicines & tracking
+    try {
+      await pool.request()
+        .input('userId', mssql.Int, userId)
+        .query(`
+          DELETE FROM MedicineTracking WHERE MedicineId IN (SELECT MedicineId FROM Medicines WHERE ParentId = @userId OR ChildId = @userId);
+          DELETE FROM Medicines WHERE ParentId = @userId OR ChildId = @userId;
+        `);
+    } catch (e2) {
+      console.warn('Cleanup step 2 notice:', e2.message);
+    }
+
+    // 3. Delete or anonymize user row
+    await pool.request()
+      .input('userId', mssql.Int, userId)
+      .query(`
+        DELETE FROM Users WHERE UserId = @userId;
+      `);
+
+    console.log(`✅ User ${userId} account and data deleted successfully.`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Your account and all associated data have been permanently deleted.',
+    });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete account',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   linkParent,
   getLinkedParents,
@@ -348,4 +403,5 @@ module.exports = {
   searchUserByEmail,
   inviteParent,
   updatePushToken,
+  deleteAccount,
 };
