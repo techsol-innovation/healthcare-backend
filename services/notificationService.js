@@ -46,9 +46,13 @@ const sendPushNotification = async (userId, title, body, data = {}, options = {}
       priority: priority,
       title: title,
       body: body,
+      _displayInForeground: true,
+      _contentAvailable: true, // Wakes iOS/Android in background/locked state
       data: {
         ...data,
         channelId: channelId,
+        type: isSOS ? 'sos' : (data.type || data.alertType || 'alert'),
+        alertType: isSOS ? 'sos' : (data.alertType || data.type || 'alert'),
       },
     });
 
