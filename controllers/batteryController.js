@@ -193,7 +193,11 @@ exports.getBatteryStatus = async (req, res) => {
       BatteryPercentage: status.batteryPercentage,
       BatteryState: status.batteryState,
       IsCharging: status.isCharging,
-      Timestamp: status.lastUpdated
+      Timestamp: status.lastUpdated,
+      MinutesAgo: status.minutesAgo ?? 0,
+      IsStale: status.isStale ?? false,
+      BatteryColor: status.batteryColor ?? 'green',
+      ShouldAlert: status.shouldAlert ?? false,
     } : null;
 
     res.json({

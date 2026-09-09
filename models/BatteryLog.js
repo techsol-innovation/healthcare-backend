@@ -29,18 +29,18 @@ class BatteryLog {
     }
   }
 
-  // Get current battery status (new method)
+  // Get current battery status (unified across BatteryLogs and Heartbeats)
   static async getCurrentStatus(parentUserId) {
     try {
       console.log('🔍 BatteryLog.getCurrentStatus called with:', { parentUserId, type: typeof parentUserId });
       
       const pool = await getConnection();
+      const pId = parseInt(parentUserId, 10);
       
-      console.log('🔍 Executing query for parentUserId:', parentUserId);
-      
-      const result = await pool
+      // 1. Fetch latest record from BatteryLogs (checking ParentUserId and legacy ChildId)
+      const batteryResult = await pool
         .request()
-        .input('parentUserId', mssql.Int, parentUserId)
+        .input('parentUserId', mssql.Int, pId)
         .query(`
           SELECT TOP 1
             BatteryPercentage,
@@ -48,34 +48,86 @@ class BatteryLog {
             IsCharging,
             LoggedAt
           FROM BatteryLogs
-          WHERE ParentUserId = @parentUserId
+          WHERE (ParentUserId = @parentUserId OR ChildId = @parentUserId)
           ORDER BY LoggedAt DESC
         `);
       
-      console.log('🔍 Query result:', { rowCount: result.recordset.length, data: result.recordset[0] });
+      // 2. Fetch latest record from Heartbeats (which samples battery every 5-15m)
+      const heartbeatResult = await pool
+        .request()
+        .input('parentUserId', mssql.Int, pId)
+        .query(`
+          SELECT TOP 1
+            BatteryLevel,
+            LastSeenAt
+          FROM Heartbeats
+          WHERE ChildId = @parentUserId AND BatteryLevel IS NOT NULL
+          ORDER BY LastSeenAt DESC
+        `);
       
-      if (result.recordset.length === 0) {
-        console.log('⚠️ No battery data found for parent:', parentUserId);
+      const log = batteryResult.recordset[0] || null;
+      const hb = heartbeatResult.recordset[0] || null;
+
+      if (!log && !hb) {
+        console.log('⚠️ No battery data found in BatteryLogs or Heartbeats for parent:', pId);
         return null;
       }
-      
-      const log = result.recordset[0];
-      const batteryColor = log.BatteryPercentage >= 50 ? 'green'
-        : log.BatteryPercentage >= 21 ? 'orange'
+
+      // Determine which reading is fresher
+      let selectedPercentage = 100;
+      let selectedState = 'unplugged';
+      let selectedIsCharging = false;
+      let selectedTimestamp = new Date();
+
+      if (log && hb) {
+        const logTime = new Date(log.LoggedAt).getTime();
+        const hbTime = new Date(hb.LastSeenAt).getTime();
+
+        if (hbTime > logTime) {
+          selectedPercentage = hb.BatteryLevel ?? log.BatteryPercentage;
+          selectedState = log.BatteryState || 'unplugged';
+          selectedIsCharging = !!log.IsCharging;
+          selectedTimestamp = hb.LastSeenAt;
+        } else {
+          selectedPercentage = log.BatteryPercentage;
+          selectedState = log.BatteryState;
+          selectedIsCharging = !!log.IsCharging;
+          selectedTimestamp = log.LoggedAt;
+        }
+      } else if (log) {
+        selectedPercentage = log.BatteryPercentage;
+        selectedState = log.BatteryState;
+        selectedIsCharging = !!log.IsCharging;
+        selectedTimestamp = log.LoggedAt;
+      } else {
+        selectedPercentage = hb.BatteryLevel;
+        selectedState = 'unplugged';
+        selectedIsCharging = false;
+        selectedTimestamp = hb.LastSeenAt;
+      }
+
+      const diffMs = Date.now() - new Date(selectedTimestamp).getTime();
+      const minutesAgo = Math.max(0, Math.floor(diffMs / 60000));
+      const isStale = minutesAgo > 25;
+
+      const batteryColor = selectedPercentage >= 50 ? 'green'
+        : selectedPercentage >= 21 ? 'orange'
         : 'red';
       
-      const shouldAlert = log.BatteryPercentage <= 20 && !log.IsCharging;
+      const shouldAlert = selectedPercentage <= 20 && !selectedIsCharging;
       
       const statusResult = {
-        batteryPercentage: log.BatteryPercentage,
-        batteryState: log.BatteryState,
-        isCharging: log.IsCharging,
-        lastUpdated: log.LoggedAt,
+        batteryPercentage: selectedPercentage,
+        batteryState: selectedState,
+        isCharging: selectedIsCharging,
+        lastUpdated: selectedTimestamp,
+        minutesAgo,
+        isStale,
         batteryColor,
         shouldAlert
       };
       
-      console.log('✅ Returning battery status:', statusResult);
+      console.log('✅ Returning unified battery status:', statusResult);
       return statusResult;
     } catch (error) {
       console.error('❌ Error getting current battery status:', error);
